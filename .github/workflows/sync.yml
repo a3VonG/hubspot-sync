@@ -1,0 +1,91 @@
+name: HubSpot Sync
+
+on:
+  # Run on a schedule (e.g., every 6 hours)
+  schedule:
+    - cron: '0 */6 * * *'  # Every 6 hours
+  
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run in dry-run mode (no changes)'
+        required: false
+        default: 'false'
+        type: boolean
+      org_id:
+        description: 'Sync specific organization ID (optional)'
+        required: false
+        type: string
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      
+      - name: Run sync
+        env:
+          HUBSPOT_API_KEY: ${{ secrets.HUBSPOT_API_KEY }}
+          PLATFORM_DB_URL: ${{ secrets.PLATFORM_DB_URL }}
+          PADDLE_API_KEY: ${{ secrets.PADDLE_API_KEY }}
+          PADDLE_VENDOR_ID: ${{ secrets.PADDLE_VENDOR_ID }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        run: |
+          ARGS=""
+          if [ "$DRY_RUN" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          if [ -n "${{ github.event.inputs.org_id }}" ]; then
+            ARGS="$ARGS --org-id ${{ github.event.inputs.org_id }}"
+          fi
+          python sync.py $ARGS
+      
+      - name: Upload audit log
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sync-audit-log
+          path: sync_audit.db
+          retention-days: 30
+
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+      
+      - name: Run tests
+        run: |
+          pytest tests/ -v --cov=. --cov-report=xml --cov-report=term-missing
+      
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          file: coverage.xml
+          fail_ci_if_error: false
