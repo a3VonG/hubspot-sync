@@ -25,8 +25,11 @@ Synchronizes platform organizations with HubSpot companies, creating association
 
 ```
 hubspot_sync/
+├── sync_organizations.py  # Entry point: org <-> company matching
+├── sync_analytics.py      # Entry point: analytics refresh
+├── sync.py                # Legacy combined entry point (both)
 ├── config.py              # Configuration from environment
-├── sync.py                # Main orchestrator
+├── filter_config.py       # Blacklist/spam filtering
 ├── clients/
 │   ├── platform.py        # Platform database client
 │   ├── hubspot.py         # HubSpot API client
@@ -37,8 +40,17 @@ hubspot_sync/
 │   └── scorer.py          # Confidence scoring
 ├── actions/
 │   ├── linker.py          # Link org to company
+│   ├── company_creator.py # Create/enrich placeholder companies
 │   ├── contact_sync.py    # Create/associate contacts
-│   └── task_creator.py    # Create HubSpot tasks
+│   ├── task_creator.py    # Create HubSpot tasks
+│   └── analytics_sync.py  # Analytics sync action
+├── analytics/
+│   ├── models.py          # Analytics data models
+│   ├── platform_analytics.py # Main analytics computer
+│   ├── account_metrics.py # Account-level metrics
+│   ├── order_metrics.py   # Order/usage metrics
+│   ├── usage_metrics.py   # Usage trend metrics
+│   └── billing_status.py  # Paddle billing status
 ├── utils/
 │   ├── domains.py         # Domain utilities
 │   └── audit.py           # Audit logging
@@ -86,17 +98,56 @@ Required HubSpot scopes for your private app:
 
 ## Usage
 
-### Run Sync
+There are two separate workflows that can be run independently:
+
+### 1. Organization Sync (matching & linking)
+
+Matches platform organizations to HubSpot companies, creates placeholder companies, links them, and syncs contacts. Run this periodically (e.g. daily/weekly) to onboard new organizations.
 
 ```bash
-# Full sync
-python sync.py
+# Full org sync
+python sync_organizations.py
 
 # Dry run (preview changes)
-python sync.py --dry-run
+python sync_organizations.py --dry-run
 
 # Sync specific organization
-python sync.py --org-id "uuid-here"
+python sync_organizations.py --org-id "uuid-here"
+
+# Limit number of orgs processed
+python sync_organizations.py --limit 50
+```
+
+### 2. Analytics Sync (refresh properties)
+
+Updates analytics properties for companies that are already linked. Queries HubSpot for all companies with a `platform_organization_id`, fetches fresh data from the platform DB and Paddle, then pushes updated properties back. Run this more frequently (e.g. hourly/daily).
+
+```bash
+# Full analytics refresh
+python sync_analytics.py
+
+# Dry run (preview changes)
+python sync_analytics.py --dry-run
+
+# Update specific organization
+python sync_analytics.py --org-id "uuid-here"
+
+# Limit companies processed
+python sync_analytics.py --limit 100
+
+# Minimal output
+python sync_analytics.py --quiet
+```
+
+See [ANALYTICS.md](ANALYTICS.md) for property definitions and logic.
+
+### Legacy Combined Script
+
+`sync.py` runs both workflows together. Prefer the separated scripts above for production use.
+
+```bash
+python sync.py              # Both workflows
+python sync.py --dry-run    # Preview
 ```
 
 ### GitHub Actions

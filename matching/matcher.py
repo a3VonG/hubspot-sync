@@ -10,7 +10,7 @@ from typing import Optional
 
 from clients.hubspot import HubSpotClient, Company
 from clients.platform import Organization
-from clients.paddle import PaddleClient
+from analytics.billing_status import BillingStatusComputer
 from config import Config
 from matching.signals import SignalCollector, MatchSignal
 from matching.scorer import Scorer, ScoredMatch
@@ -53,7 +53,7 @@ class Matcher:
         self,
         hubspot: HubSpotClient,
         config: Config,
-        paddle: Optional[PaddleClient] = None,
+        billing_computer: Optional[BillingStatusComputer] = None,
     ):
         """
         Initialize the matcher.
@@ -61,11 +61,11 @@ class Matcher:
         Args:
             hubspot: HubSpot API client
             config: Configuration
-            paddle: Optional Paddle API client
+            billing_computer: Optional Paddle Billing API client
         """
         self.hubspot = hubspot
         self.config = config
-        self.signal_collector = SignalCollector(hubspot, config, paddle)
+        self.signal_collector = SignalCollector(hubspot, config, billing_computer)
         self.scorer = Scorer()
     
     def match_organization(self, org: Organization) -> MatchResult:
@@ -117,7 +117,7 @@ class Matcher:
                 matched_company=top_match.company,
                 candidates=scored_matches,
                 confidence=1.0,
-                message=f"Organization {org.name} already linked to {top_match.company.name}",
+                message=f"Organization {org.name} already linked to {top_match.company.name or top_match.company.id}",
             )
         
         # Case 2: Conflict - company has different platform ID
@@ -129,7 +129,7 @@ class Matcher:
                 candidates=scored_matches,
                 confidence=top_match.score,
                 message=(
-                    f"Conflict: {top_match.company.name} already linked to platform org "
+                    f"Conflict: {top_match.company.name or top_match.company.id} already linked to platform org "
                     f"{top_match.company.platform_org_id}, but {org.name} ({org.id}) claims it"
                 ),
             )
@@ -152,13 +152,14 @@ class Matcher:
         
         # Case 4: High confidence - auto link
         if top_match.score >= self.config.auto_link_confidence_threshold:
+            company_name = top_match.company.name or f"Company #{top_match.company.id}"
             return MatchResult(
                 match_type=MatchType.AUTO_LINK,
                 organization=org,
                 matched_company=top_match.company,
                 candidates=scored_matches,
                 confidence=top_match.score,
-                message=f"Auto-linking {org.name} to {top_match.company.name} (confidence: {top_match.score:.2f})",
+                message=f"Auto-linking {org.name} to {company_name} (confidence: {top_match.score:.2f})",
             )
         
         # Case 5: Medium confidence - needs review
@@ -170,7 +171,7 @@ class Matcher:
                 candidates=scored_matches,
                 confidence=top_match.score,
                 message=(
-                    f"Needs review: {org.name} might match {top_match.company.name} "
+                    f"Needs review: {org.name} might match {top_match.company.name or top_match.company.id} "
                     f"(confidence: {top_match.score:.2f})"
                 ),
             )

@@ -64,9 +64,13 @@ class TestIsGenericDomain:
     
     def test_with_custom_config(self):
         """Should use config's generic domains list."""
+        from config import DatabaseConfig
+        db_config = DatabaseConfig(
+            host="localhost", port=5432, name="test", user="test", password="test"
+        )
         config = Config(
             hubspot_api_key="test",
-            platform_db_url="test",
+            db_config=db_config,
             generic_email_domains=("custom.com",),
         )
         assert is_generic_domain("custom.com", config) is True

@@ -11,7 +11,7 @@ from typing import Optional
 
 from clients.hubspot import HubSpotClient, Company, Contact
 from clients.platform import Organization
-from clients.paddle import PaddleClient, PaddleSubscription
+from analytics.billing_status import BillingStatusComputer
 from config import Config
 from utils.domains import extract_domain, is_generic_domain
 
@@ -47,7 +47,7 @@ class SignalCollector:
         self,
         hubspot: HubSpotClient,
         config: Config,
-        paddle: Optional[PaddleClient] = None,
+        billing_computer: Optional[BillingStatusComputer] = None,
     ):
         """
         Initialize the signal collector.
@@ -55,11 +55,11 @@ class SignalCollector:
         Args:
             hubspot: HubSpot API client
             config: Configuration
-            paddle: Optional Paddle API client
+            billing_computer: Optional Paddle Billing API client
         """
         self.hubspot = hubspot
         self.config = config
-        self.paddle = paddle
+        self.billing_computer = billing_computer
     
     def collect_signals(self, org: Organization) -> list[MatchSignal]:
         """
@@ -87,7 +87,7 @@ class SignalCollector:
         signals.extend(contact_signals)
         
         # 4. Check Paddle data if available
-        if self.paddle and org.paddle_id:
+        if self.billing_computer and org.paddle_id:
             paddle_signals = self._check_paddle_matches(org)
             signals.extend(paddle_signals)
         
@@ -216,20 +216,26 @@ class SignalCollector:
         return signals
     
     def _check_paddle_matches(self, org: Organization) -> list[MatchSignal]:
-        """Check for matches using Paddle subscription data."""
+        """Check for matches using Paddle customer data."""
         signals = []
         
-        if not self.paddle or not org.paddle_id:
+        if not self.billing_computer or not org.paddle_id:
             return signals
         
-        # Get Paddle subscription data
-        paddle_data = self.paddle.get_subscription_by_id(org.paddle_id)
-        if not paddle_data:
+        # Get Paddle customer info via Billing API
+        try:
+            paddle_info = self.billing_computer.get_customer_info(org.paddle_id)
+        except Exception as e:
+            print(f"  Warning: Could not fetch Paddle info for matching: {e}")
+            return signals
+        
+        if not paddle_info:
             return signals
         
         # Search by company name if available
-        if paddle_data.company_name:
-            companies = self.hubspot.search_companies_by_name(paddle_data.company_name)
+        paddle_name = paddle_info.get("name")
+        if paddle_name:
+            companies = self.hubspot.search_companies_by_name(paddle_name)
             for company in companies:
                 confidence = 0.75
                 if company.platform_org_id and company.platform_org_id != org.id:
@@ -239,9 +245,9 @@ class SignalCollector:
                     signal_type=SignalType.PADDLE_NAME_MATCH,
                     company=company,
                     confidence=confidence,
-                    source=f"Paddle company name '{paddle_data.company_name}' matches {company.name}",
+                    source=f"Paddle company name '{paddle_name}' matches {company.name}",
                     details={
-                        "paddle_company_name": paddle_data.company_name,
+                        "paddle_company_name": paddle_name,
                         "existing_platform_id": company.platform_org_id,
                     },
                 ))

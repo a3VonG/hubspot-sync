@@ -26,14 +26,16 @@ class TestLinker:
         audit_log = AuditLog(":memory:")
         audit_log.start_sync_run()
         
+        # Mock get_company_by_id for standard_lab check
+        hubspot.get_company_by_id.return_value = sample_company
+        hubspot.update_company.return_value = True
+        
         linker = Linker(hubspot, config, audit_log)
         result = linker.link_organization_to_company(sample_organization, sample_company)
         
         assert result.success is True
         assert result.was_already_linked is False
-        hubspot.update_company_platform_org_id.assert_called_once_with(
-            sample_company.id, sample_organization.id
-        )
+        hubspot.update_company.assert_called_once()
     
     def test_link_already_linked(self, config, sample_organization, sample_company_with_platform_id):
         """Should recognize already linked companies."""

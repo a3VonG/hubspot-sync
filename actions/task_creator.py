@@ -275,12 +275,18 @@ class TaskCreator:
             f"**Platform ID:** {org.id}",
             f"**Users:** {len(org.users)}",
             "",
-            f"**HubSpot Company:** {company.name if company else 'Unknown'}",
-            f"**Existing Platform ID:** {company.platform_org_id if company else 'N/A'}",
+            f"**Matched HubSpot Company:** {company.name if company else 'Unknown'}",
+            f"**Already linked to Platform ID:** {company.platform_org_id if company else 'N/A'}",
             "",
-            "**Issue:** This company is already linked to a different platform organization.",
+            "**Issue:** Domain match found a company that's already linked to a DIFFERENT platform org.",
+            "A separate placeholder company has been created for this organization to avoid recurring conflicts.",
             "",
-            "**User emails in platform org:**",
+            "**This may indicate:**",
+            "- Same company created two platform accounts (merge needed)",
+            "- Two different companies sharing a domain",
+            "- A user transferred to a new organization",
+            "",
+            "**User emails in this platform org:**",
         ]
         
         for email in org.user_emails[:10]:
@@ -291,7 +297,10 @@ class TaskCreator:
         
         lines.extend([
             "",
-            "**Action needed:** Determine which platform org should be linked to this company.",
+            "**Action needed:**",
+            "1. Review both platform orgs",
+            "2. Merge HubSpot companies if they're the same business",
+            "3. Or keep separate if they're different businesses",
         ])
         
         return "\n".join(lines)

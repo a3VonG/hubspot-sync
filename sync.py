@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-HubSpot-Platform Sync Main Entry Point.
+HubSpot-Platform Sync - Combined Entry Point (Legacy).
 
-Orchestrates the sync process:
-1. Fetches organizations from platform database
-2. Matches them to HubSpot companies
-3. Creates/associates contacts
-4. Creates tasks for manual review
-5. Reports results to Slack
+This script runs BOTH organization sync AND analytics sync together.
+For production use, prefer the separated entry points:
+
+    python sync_organizations.py    # Link orgs to companies (daily/weekly)
+    python sync_analytics.py        # Update analytics (hourly/daily)
+
+See ARCHITECTURE.md for system overview.
 
 Usage:
     python sync.py                  # Run full sync
@@ -16,22 +17,32 @@ Usage:
 """
 
 import argparse
-import json
 import sys
 from datetime import datetime, timezone
 from typing import Optional
 
 import requests
 
+# Load .env file automatically
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not installed, use system env vars
+
 from config import Config
+from filter_config import is_org_blacklisted, is_org_internal, get_spam_reason
 from clients.platform import PlatformClient, Organization
 from clients.hubspot import HubSpotClient
-from clients.paddle import PaddleClient
 from matching.matcher import Matcher, MatchResult, MatchType
+from matching.signals import SignalType
 from actions.linker import Linker
 from actions.contact_sync import ContactSyncer
 from actions.task_creator import TaskCreator
 from actions.company_creator import CompanyCreator
+from actions.analytics_sync import AnalyticsSyncer
+from analytics.platform_analytics import PlatformAnalyticsComputer
+from analytics.billing_status import BillingStatusComputer
 from utils.audit import AuditLog, SyncEventType
 
 
@@ -53,31 +64,52 @@ class SyncOrchestrator:
         self.audit_log = AuditLog()
         
         # Initialize clients
-        self.platform = PlatformClient(config.platform_db_url)
+        self.platform = PlatformClient(config.db_config)
         self.hubspot = HubSpotClient(
             config.hubspot_api_key,
             config.hubspot_platform_org_id_property,
         )
         
-        # Initialize Paddle if configured
-        self.paddle = None
+        # Initialize Paddle Billing API if configured
+        self.billing_computer = None
         if config.paddle_api_key and config.paddle_vendor_id:
-            self.paddle = PaddleClient(config.paddle_vendor_id, config.paddle_api_key)
+            self.billing_computer = BillingStatusComputer(config.paddle_vendor_id, config.paddle_api_key)
+        
+        # Billing status cache (org_id -> has_active_subscription)
+        self._billing_cache: dict[str, bool] = {}
+        
+        # Track companies claimed during this sync run to prevent double-linking
+        # Maps company_id -> org_id that claimed it
+        self._claimed_companies: dict[str, str] = {}
         
         # Initialize components
-        self.matcher = Matcher(self.hubspot, config, self.paddle)
-        self.linker = Linker(self.hubspot, config, self.audit_log)
+        self.matcher = Matcher(self.hubspot, config, self.billing_computer)
+        self.linker = Linker(self.hubspot, config, self.audit_log, self.billing_computer)
         self.contact_syncer = ContactSyncer(self.hubspot, config, self.audit_log)
         self.task_creator = TaskCreator(self.hubspot, config, self.audit_log)
-        self.company_creator = CompanyCreator(self.hubspot, config, self.audit_log, self.paddle)
+        self.company_creator = CompanyCreator(self.hubspot, config, self.audit_log, self.billing_computer)
+        
+        # Initialize analytics computer and syncer
+        self.analytics_computer = PlatformAnalyticsComputer(
+            config.db_config,
+            config,
+            config.paddle_vendor_id,
+            config.paddle_api_key,
+        )
+        self.analytics_syncer = AnalyticsSyncer(
+            self.hubspot, self.analytics_computer, config, self.audit_log
+        )
         
         # Track results
         self.results = {
             "orgs_processed": 0,
+            "orgs_skipped_blacklist": 0,
+            "orgs_skipped_internal": 0,
             "already_linked": 0,
             "auto_linked": 0,
             "companies_created": 0,
             "companies_enriched": 0,
+            "analytics_updated": 0,
             "tasks_created": 0,
             "contacts_created": 0,
             "contacts_associated": 0,
@@ -87,12 +119,13 @@ class SyncOrchestrator:
         }
         self.errors: list[str] = []
     
-    def run(self, org_id: Optional[str] = None) -> dict:
+    def run(self, org_id: Optional[str] = None, limit: Optional[int] = None) -> dict:
         """
         Run the sync process.
         
         Args:
             org_id: Optional specific organization ID to sync
+            limit: Optional limit on number of organizations to process
             
         Returns:
             Dictionary with sync results
@@ -100,10 +133,17 @@ class SyncOrchestrator:
         self.audit_log.start_sync_run()
         start_time = datetime.now(timezone.utc)
         
+        # Reset tracking for this run
+        self._claimed_companies = {}
+        
         print(f"{'='*60}")
         print(f"HubSpot-Platform Sync Started")
         print(f"Run ID: {self.audit_log.sync_run_id}")
         print(f"Dry Run: {self.config.dry_run}")
+        if limit:
+            print(f"Limit: {limit} organizations")
+        if not self.billing_computer:
+            print(f"⚠️  Paddle credentials not configured - billing_status will default to 'not started'")
         print(f"{'='*60}")
         
         try:
@@ -116,11 +156,24 @@ class SyncOrchestrator:
             else:
                 organizations = self.platform.get_all_organizations()
             
-            print(f"\nFetched {len(organizations)} organizations to process\n")
+            total_count = len(organizations)
+            
+            # Apply limit if specified
+            if limit and len(organizations) > limit:
+                organizations = organizations[:limit]
+                print(f"\nFetched {total_count} organizations, processing first {limit}\n")
+            else:
+                print(f"\nFetched {len(organizations)} organizations to process\n")
+            
+            # Pre-fetch billing statuses for efficiency
+            self._prefetch_billing_statuses(organizations)
             
             # Process each organization
             for i, org in enumerate(organizations, 1):
-                print(f"[{i}/{len(organizations)}] Processing: {org.name} ({org.id})")
+                admin_email = org.admin_email or "no admin"
+                print(f"\n[{i}/{len(organizations)}] {org.name}")
+                print(f"  Org ID: {org.id}")
+                print(f"  Admin: {admin_email}")
                 try:
                     self._process_organization(org)
                 except Exception as e:
@@ -161,8 +214,118 @@ class SyncOrchestrator:
         
         return self.results
     
+    def _prefetch_billing_statuses(self, organizations: list[Organization]):
+        """
+        Pre-fetch billing statuses for all organizations.
+        
+        Caches results to avoid individual API calls per organization.
+        """
+        if not self.billing_computer:
+            return
+        
+        # Collect paddle_ids
+        paddle_ids = [org.paddle_id for org in organizations if org.paddle_id]
+        
+        if not paddle_ids:
+            return
+        
+        print(f"Fetching billing statuses for {len(paddle_ids)} organizations...")
+        
+        try:
+            statuses = self.billing_computer.get_billing_status_batch(paddle_ids)
+            
+            # Build cache keyed by org_id
+            for org in organizations:
+                if org.paddle_id and org.paddle_id in statuses:
+                    self._billing_cache[org.id] = statuses[org.paddle_id].has_active_subscription
+                else:
+                    self._billing_cache[org.id] = False
+            
+            active_count = sum(1 for v in self._billing_cache.values() if v)
+            print(f"  {active_count} with active subscriptions, {len(self._billing_cache) - active_count} in testing\n")
+        except Exception as e:
+            print(f"  Warning: Could not fetch billing statuses: {e}\n")
+    
+    def _get_subscription_status(self, org: Organization) -> bool:
+        """Get cached subscription status for an organization."""
+        return self._billing_cache.get(org.id, False)
+    
+    def _print_match_details(self, match_result: MatchResult, org: Organization):
+        """Print detailed match information for debugging/transparency."""
+        company = match_result.matched_company
+        company_display = "None"
+        if company:
+            company_display = company.name or f"Company #{company.id}"
+            if company.domain:
+                company_display += f" ({company.domain})"
+        
+        print(f"  Match: {match_result.match_type.value} -> {company_display}")
+        print(f"    Confidence: {match_result.confidence:.0%}")
+        
+        # Show spam warning if applicable (no match and looks like spam)
+        if match_result.match_type == MatchType.NO_MATCH:
+            spam_reason = get_spam_reason(org.admin_email)
+            if spam_reason:
+                print(f"    ⚠️  Likely spam: {spam_reason}")
+        
+        # Show matching signals with details
+        if match_result.candidates:
+            top_candidate = match_result.candidates[0]
+            for signal in top_candidate.signals:
+                signal_name = signal.signal_type.value.replace("_", " ").title()
+                
+                if signal.signal_type == SignalType.DOMAIN_MATCH:
+                    domain = signal.details.get("matched_domain", "?")
+                    is_admin = signal.details.get("is_admin_domain", False)
+                    admin_marker = " (admin)" if is_admin else ""
+                    print(f"    - {signal_name}: {domain}{admin_marker}")
+                
+                elif signal.signal_type == SignalType.CONTACT_ASSOCIATION:
+                    matched = signal.details.get("matched_count", 0)
+                    total = signal.details.get("total_users", 0)
+                    emails = signal.details.get("matched_emails", [])
+                    email_preview = ", ".join(emails[:2])
+                    if len(emails) > 2:
+                        email_preview += f" +{len(emails)-2} more"
+                    print(f"    - {signal_name}: {matched}/{total} users ({email_preview})")
+                
+                elif signal.signal_type == SignalType.PADDLE_NAME_MATCH:
+                    paddle_name = signal.details.get("paddle_company_name", "?")
+                    print(f"    - {signal_name}: '{paddle_name}'")
+                
+                elif signal.signal_type == SignalType.EXISTING_PLATFORM_ID:
+                    print(f"    - Already linked (ground truth)")
+                
+                else:
+                    print(f"    - {signal_name}: {signal.source}")
+    
     def _process_organization(self, org: Organization):
         """Process a single organization."""
+        # Check blacklist first
+        if is_org_blacklisted(org.id):
+            print(f"  Skipping: blacklisted")
+            self.results["orgs_skipped_blacklist"] += 1
+            self.audit_log.log(
+                SyncEventType.SKIPPED,
+                message="Organization is blacklisted",
+                platform_org_id=org.id,
+                platform_org_name=org.name,
+            )
+            return
+        
+        # Check if internal/test organization (all emails from blacklisted domains)
+        user_emails = [u.email for u in org.users if u.email]
+        if is_org_internal(org.admin_email, user_emails):
+            print(f"  Skipping: internal organization")
+            self.results["orgs_skipped_internal"] += 1
+            self.audit_log.log(
+                SyncEventType.SKIPPED,
+                message="Internal organization (blacklisted email domain)",
+                platform_org_id=org.id,
+                platform_org_name=org.name,
+            )
+            return
+        
         self.results["orgs_processed"] += 1
         
         self.audit_log.log(
@@ -186,14 +349,22 @@ class SyncOrchestrator:
         
         # Match organization to company
         match_result = self.matcher.match_organization(org)
-        print(f"  Match result: {match_result.match_type.value} - {match_result.message}")
+        self._print_match_details(match_result, org)
+        
+        # Get subscription status for this org
+        has_subscription = self._get_subscription_status(org)
         
         # Handle based on match type
         if match_result.match_type == MatchType.ALREADY_LINKED:
             self.results["already_linked"] += 1
+            # Track this company as claimed by this org
+            if match_result.matched_company:
+                self._claimed_companies[match_result.matched_company.id] = org.id
             # Try to enrich if it's a placeholder and we now have Paddle data
             if self.config.auto_create_companies and match_result.matched_company:
-                enrich_result = self.company_creator.create_or_enrich_company(org)
+                enrich_result = self.company_creator.create_or_enrich_company(
+                    org, has_subscription
+                )
                 if enrich_result.was_enriched:
                     self.results["companies_enriched"] += 1
                     print(f"  Enriched existing company with Paddle data")
@@ -202,26 +373,70 @@ class SyncOrchestrator:
                 self._sync_contacts(org, match_result.matched_company)
         
         elif match_result.match_type == MatchType.AUTO_LINK:
-            # Link the company
-            link_result = self.linker.link_organization_to_company(
-                org, match_result.matched_company
-            )
-            if link_result.success:
-                self.results["auto_linked"] += 1
-                print(f"  Linked to: {match_result.matched_company.name}")
-                # Sync contacts after linking
-                self._sync_contacts(org, match_result.matched_company)
+            company = match_result.matched_company
+            company_id = company.id if company else None
+            
+            # Check if this company was already claimed by another org in this run
+            if company_id and company_id in self._claimed_companies:
+                claiming_org_id = self._claimed_companies[company_id]
+                print(f"    -> Same-run conflict: Company already claimed by org {claiming_org_id[:8]}...")
+                
+                # Treat as conflict - create placeholder for this org
+                self.results["conflicts"] += 1
+                if self.config.auto_create_companies:
+                    create_result = self.company_creator.create_or_enrich_company(
+                        org, has_subscription, has_real_usage=False
+                    )
+                    if create_result.was_created:
+                        self.results["companies_created"] += 1
+                        print(f"    -> Created separate placeholder company")
+                        if create_result.company:
+                            self._sync_contacts(org, create_result.company)
+                
+                # Create task for SDR
+                task_result = self.task_creator.create_task_for_match_result(match_result)
+                if task_result.success and not task_result.skipped:
+                    self.results["tasks_created"] += 1
+                    print(f"    -> Created task for SDR to resolve duplicate")
             else:
-                self.results["errors"] += 1
-                self.errors.append(link_result.message)
+                # Normal auto-link flow
+                link_result = self.linker.link_organization_to_company(org, company)
+                if link_result.success:
+                    self.results["auto_linked"] += 1
+                    # Track this company as claimed
+                    if company_id:
+                        self._claimed_companies[company_id] = org.id
+                    print(f"    -> Linked successfully")
+                    # Sync contacts after linking
+                    self._sync_contacts(org, company)
+                else:
+                    self.results["errors"] += 1
+                    self.errors.append(link_result.message)
+                    print(f"    -> Link failed: {link_result.message}")
         
         elif match_result.match_type == MatchType.CONFLICT:
             self.results["conflicts"] += 1
-            # Create task for conflict
+            # Create a placeholder company for this org to avoid recurring conflicts
+            # The conflicting company already has a different org linked
+            print(f"    -> Conflict: company already linked to different org")
+            
+            if self.config.auto_create_companies:
+                # Create separate placeholder for this org
+                create_result = self.company_creator.create_or_enrich_company(
+                    org, has_subscription, has_real_usage=False  # TODO: check real usage
+                )
+                if create_result.was_created:
+                    self.results["companies_created"] += 1
+                    print(f"    -> Created separate placeholder company")
+                    # Sync contacts to the new placeholder
+                    if create_result.company:
+                        self._sync_contacts(org, create_result.company)
+            
+            # Create task for SDR to resolve the duplicate
             task_result = self.task_creator.create_task_for_match_result(match_result)
             if task_result.success and not task_result.skipped:
                 self.results["tasks_created"] += 1
-                print(f"  Created conflict task")
+                print(f"    -> Created task for SDR to resolve duplicate")
         
         elif match_result.match_type == MatchType.MULTIPLE_MATCHES:
             # Create task for multiple matches
@@ -248,14 +463,20 @@ class SyncOrchestrator:
             
             # Auto-create company if enabled
             if self.config.auto_create_companies:
-                create_result = self.company_creator.create_or_enrich_company(org)
+                # TODO: Get real usage from analytics when available
+                has_real_usage = False  
+                create_result = self.company_creator.create_or_enrich_company(
+                    org, has_subscription, has_real_usage
+                )
                 if create_result.success:
                     if create_result.was_created:
                         self.results["companies_created"] += 1
-                        print(f"  Created placeholder company")
+                        # Include spam flag info in output
+                        spam_info = " [LIKELY SPAM]" if "SPAM" in create_result.message else ""
+                        print(f"    -> Created placeholder company{spam_info}")
                     if create_result.was_enriched:
                         self.results["companies_enriched"] += 1
-                        print(f"  Enriched company with Paddle data")
+                        print(f"    -> Enriched company with Paddle data")
                     # Sync contacts to the new/existing company
                     if create_result.company:
                         self._sync_contacts(org, create_result.company)
@@ -269,8 +490,44 @@ class SyncOrchestrator:
                     if task_result.success and not task_result.skipped:
                         self.results["tasks_created"] += 1
     
+    def _sync_contacts_and_analytics(self, org: Organization, company):
+        """Sync contacts and analytics for an organization."""
+        # Sync contacts
+        contact_result = self.contact_syncer.sync_organization_contacts(org, company)
+        
+        created = len(contact_result.contacts_created)
+        associated = len(contact_result.contacts_associated)
+        
+        self.results["contacts_created"] += created
+        self.results["contacts_associated"] += associated
+        
+        if created or associated:
+            print(f"  Contacts: {created} created, {associated} associated")
+        
+        if contact_result.errors:
+            for error in contact_result.errors:
+                self.errors.append(error)
+            self.results["errors"] += len(contact_result.errors)
+        
+        # Sync analytics
+        analytics_result = self.analytics_syncer.sync_organization_analytics(
+            org.id, org.paddle_id, company
+        )
+        
+        if analytics_result.success:
+            self.results["analytics_updated"] += 1
+            print(f"  Analytics: {len(analytics_result.properties_updated)} properties updated")
+        else:
+            if "blacklisted" not in analytics_result.message.lower():
+                self.results["errors"] += 1
+                self.errors.append(f"Analytics sync failed for {org.name}: {analytics_result.message}")
+    
     def _sync_contacts(self, org: Organization, company):
-        """Sync contacts for an organization."""
+        """Sync contacts for an organization (backwards compatibility)."""
+        self._sync_contacts_and_analytics(org, company)
+    
+    def _sync_contacts_only(self, org: Organization, company):
+        """Sync only contacts, no analytics."""
         contact_result = self.contact_syncer.sync_organization_contacts(org, company)
         
         created = len(contact_result.contacts_created)
@@ -302,10 +559,13 @@ class SyncOrchestrator:
             "SUMMARY",
             "-" * 40,
             f"Organizations processed:  {self.results['orgs_processed']}",
+            f"Orgs skipped (blacklist): {self.results['orgs_skipped_blacklist']}",
+            f"Orgs skipped (internal):  {self.results['orgs_skipped_internal']}",
             f"Already linked:           {self.results['already_linked']}",
             f"Auto-linked:              {self.results['auto_linked']}",
             f"Companies created:        {self.results['companies_created']}",
             f"Companies enriched:       {self.results['companies_enriched']}",
+            f"Analytics updated:        {self.results['analytics_updated']}",
             f"Tasks created:            {self.results['tasks_created']}",
             f"No match found:           {self.results['no_match']}",
             f"Conflicts:                {self.results['conflicts']}",
@@ -356,7 +616,7 @@ class SyncOrchestrator:
                     {"type": "mrkdwn", "text": f"*Auto-linked:* {self.results['auto_linked']}"},
                     {"type": "mrkdwn", "text": f"*Already linked:* {self.results['already_linked']}"},
                     {"type": "mrkdwn", "text": f"*Companies created:* {self.results['companies_created']}"},
-                    {"type": "mrkdwn", "text": f"*Companies enriched:* {self.results['companies_enriched']}"},
+                    {"type": "mrkdwn", "text": f"*Analytics updated:* {self.results['analytics_updated']}"},
                     {"type": "mrkdwn", "text": f"*Tasks created:* {self.results['tasks_created']}"},
                     {"type": "mrkdwn", "text": f"*Contacts created:* {self.results['contacts_created']}"},
                     {"type": "mrkdwn", "text": f"*Contacts associated:* {self.results['contacts_associated']}"},
@@ -411,6 +671,11 @@ def main():
         "--org-id",
         help="Sync a specific organization by ID",
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        help="Limit the number of organizations to process",
+    )
     
     args = parser.parse_args()
     
@@ -427,7 +692,7 @@ def main():
     
     # Run sync
     orchestrator = SyncOrchestrator(config)
-    results = orchestrator.run(org_id=args.org_id)
+    results = orchestrator.run(org_id=args.org_id, limit=args.limit)
     
     # Exit with error code if there were errors
     if results["errors"] > 0:

@@ -3,7 +3,8 @@ Configuration for HubSpot-Platform Sync.
 
 Environment variables:
 - HUBSPOT_API_KEY: HubSpot private app access token
-- PLATFORM_DB_URL: PostgreSQL connection string for platform database
+- DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD: Database connection
+- SSH_HOST, SSH_USER, SSH_KEY_PATH: SSH tunnel configuration
 - PADDLE_API_KEY: Paddle API key (optional)
 - PADDLE_VENDOR_ID: Paddle vendor ID (optional)
 - SLACK_WEBHOOK_URL: Slack webhook for reports (optional)
@@ -15,6 +16,42 @@ from typing import Optional
 
 
 @dataclass
+class DatabaseConfig:
+    """Database connection configuration."""
+    host: str
+    port: int
+    name: str
+    user: str
+    password: str
+    
+    # SSH tunnel settings
+    ssh_host: Optional[str] = None
+    ssh_user: Optional[str] = None
+    ssh_key_path: Optional[str] = None
+    ssh_key_base64: Optional[str] = None
+    
+    @property
+    def requires_tunnel(self) -> bool:
+        """Check if SSH tunnel is required."""
+        return bool(self.ssh_host and self.ssh_user)
+    
+    @classmethod
+    def from_env(cls) -> "DatabaseConfig":
+        """Load database configuration from environment variables."""
+        return cls(
+            host=os.environ["DB_HOST"],
+            port=int(os.environ.get("DB_PORT", "5432")),
+            name=os.environ["DB_NAME"],
+            user=os.environ["DB_USER"],
+            password=os.environ["DB_PASSWORD"],
+            ssh_host=os.environ.get("SSH_HOST"),
+            ssh_user=os.environ.get("SSH_USER"),
+            ssh_key_path=os.environ.get("SSH_KEY_PATH"),
+            ssh_key_base64=os.environ.get("SSH_KEY_BASE64"),
+        )
+
+
+@dataclass
 class Config:
     """Configuration container for the sync system."""
     
@@ -22,7 +59,7 @@ class Config:
     hubspot_api_key: str
     
     # Platform Database (required)
-    platform_db_url: str
+    db_config: DatabaseConfig
     
     # HubSpot property name (optional with default)
     hubspot_platform_org_id_property: str = "platform_org_id"
@@ -75,10 +112,10 @@ class Config:
         """Load configuration from environment variables."""
         return cls(
             hubspot_api_key=os.environ["HUBSPOT_API_KEY"],
+            db_config=DatabaseConfig.from_env(),
             hubspot_platform_org_id_property=os.environ.get(
                 "HUBSPOT_PLATFORM_ORG_ID_PROPERTY", "platform_org_id"
             ),
-            platform_db_url=os.environ["PLATFORM_DB_URL"],
             paddle_api_key=os.environ.get("PADDLE_API_KEY"),
             paddle_vendor_id=os.environ.get("PADDLE_VENDOR_ID"),
             slack_webhook_url=os.environ.get("SLACK_WEBHOOK_URL"),

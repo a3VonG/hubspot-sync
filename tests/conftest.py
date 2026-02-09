@@ -5,18 +5,30 @@ Pytest configuration and shared fixtures.
 import pytest
 from unittest.mock import MagicMock, patch
 
-from config import Config
+from config import Config, DatabaseConfig
 from clients.platform import Organization, User
 from clients.hubspot import Company, Contact
 
 
 @pytest.fixture
-def config():
+def db_config():
+    """Create a test database configuration."""
+    return DatabaseConfig(
+        host="localhost",
+        port=5432,
+        name="test",
+        user="test",
+        password="test",
+    )
+
+
+@pytest.fixture
+def config(db_config):
     """Create a test configuration."""
     return Config(
         hubspot_api_key="test-api-key",
+        db_config=db_config,
         hubspot_platform_org_id_property="platform_org_id",
-        platform_db_url="postgresql://test:test@localhost/test",
         paddle_api_key=None,
         paddle_vendor_id=None,
         slack_webhook_url=None,

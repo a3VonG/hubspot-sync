@@ -71,17 +71,26 @@ class HubSpotClient:
     
     # ========== Company Operations ==========
     
-    def get_company_by_platform_org_id(self, platform_org_id: str) -> Optional[Company]:
+    def get_company_by_platform_org_id(
+        self,
+        platform_org_id: str,
+        extra_properties: list[str] = None,
+    ) -> Optional[Company]:
         """
         Find a company by platform_org_id custom property.
         
         Args:
             platform_org_id: The platform organization ID
+            extra_properties: Additional properties to fetch
             
         Returns:
             Company object or None if not found
         """
         try:
+            props_to_fetch = ["name", "domain", self.platform_org_id_property]
+            if extra_properties:
+                props_to_fetch.extend(extra_properties)
+            
             data = self._request(
                 "POST",
                 "/crm/v3/objects/companies/search",
@@ -93,7 +102,7 @@ class HubSpotClient:
                             "value": platform_org_id,
                         }]
                     }],
-                    "properties": ["name", "domain", self.platform_org_id_property],
+                    "properties": props_to_fetch,
                 }
             )
             if data.get("results"):
@@ -110,13 +119,27 @@ class HubSpotClient:
             pass
         return None
     
-    def get_company_by_id(self, company_id: str) -> Optional[Company]:
-        """Fetch a company by ID."""
+    def get_company_by_id(
+        self,
+        company_id: str,
+        extra_properties: list[str] = None,
+    ) -> Optional[Company]:
+        """
+        Fetch a company by ID.
+        
+        Args:
+            company_id: HubSpot company ID
+            extra_properties: Additional properties to fetch
+        """
         try:
+            props_to_fetch = [f"name,domain,{self.platform_org_id_property}"]
+            if extra_properties:
+                props_to_fetch.extend(extra_properties)
+            
             data = self._request(
                 "GET",
                 f"/crm/v3/objects/companies/{company_id}",
-                params={"properties": f"name,domain,{self.platform_org_id_property}"}
+                params={"properties": ",".join(props_to_fetch)}
             )
             props = data.get("properties", {})
             return Company(
@@ -168,6 +191,77 @@ class HubSpotClient:
             return companies
         except requests.HTTPError:
             return []
+    
+    def get_all_companies_with_platform_org_id(
+        self,
+        extra_properties: list[str] = None,
+    ) -> list[Company]:
+        """
+        Get all companies that have a platform_org_id set.
+        
+        Uses HubSpot search API with pagination to fetch all linked companies.
+        This is the starting point for analytics-only sync.
+        
+        Args:
+            extra_properties: Additional properties to fetch
+            
+        Returns:
+            List of companies with platform_org_id
+        """
+        companies = []
+        after = None
+        
+        # Build properties list
+        props_to_fetch = ["name", "domain", self.platform_org_id_property]
+        if extra_properties:
+            props_to_fetch.extend(extra_properties)
+        
+        while True:
+            try:
+                body = {
+                    "filterGroups": [{
+                        "filters": [{
+                            "propertyName": self.platform_org_id_property,
+                            "operator": "HAS_PROPERTY",
+                        }]
+                    }],
+                    "properties": props_to_fetch,
+                    "limit": 100,
+                }
+                if after:
+                    body["after"] = after
+                
+                data = self._request(
+                    "POST",
+                    "/crm/v3/objects/companies/search",
+                    json=body
+                )
+                
+                for result in data.get("results", []):
+                    props = result.get("properties", {})
+                    org_id = props.get(self.platform_org_id_property)
+                    # Filter out empty values
+                    if org_id and org_id.strip():
+                        companies.append(Company(
+                            id=result["id"],
+                            name=props.get("name"),
+                            domain=props.get("domain"),
+                            platform_org_id=org_id,
+                            properties=props,
+                        ))
+                
+                # Check for more pages
+                paging = data.get("paging", {})
+                next_page = paging.get("next", {})
+                after = next_page.get("after")
+                
+                if not after:
+                    break
+                    
+            except requests.HTTPError:
+                break
+        
+        return companies
     
     def search_companies_by_name(self, name: str) -> list[Company]:
         """
@@ -261,7 +355,7 @@ class HubSpotClient:
         except requests.HTTPError:
             return None
     
-    def update_company(self, company_id: str, properties: dict) -> bool:
+    def update_company(self, company_id: str, properties: dict) -> tuple[bool, str]:
         """
         Update company properties.
         
@@ -270,7 +364,7 @@ class HubSpotClient:
             properties: Dictionary of properties to update
             
         Returns:
-            True if successful
+            Tuple of (success, error_message). error_message is empty on success.
         """
         try:
             self._request(
@@ -278,9 +372,16 @@ class HubSpotClient:
                 f"/crm/v3/objects/companies/{company_id}",
                 json={"properties": properties}
             )
-            return True
-        except requests.HTTPError:
-            return False
+            return True, ""
+        except requests.HTTPError as e:
+            status = e.response.status_code if e.response is not None else "unknown"
+            body = ""
+            try:
+                body = e.response.text[:500] if e.response is not None else ""
+            except Exception:
+                pass
+            error_msg = f"HTTP {status}: {body}" if body else f"HTTP {status}"
+            return False, error_msg
     
     def get_company_with_source(self, company_id: str, source_property: str) -> Optional[Company]:
         """

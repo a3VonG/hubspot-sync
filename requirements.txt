@@ -1,6 +1,9 @@
 # Core dependencies
 requests>=2.31.0
 psycopg2-binary>=2.9.9
+sshtunnel>=0.4.0
+paramiko>=2.12.0,<3.0.0  # sshtunnel 0.4.0 requires paramiko 2.x
+python-dotenv>=1.0.0
 
 # Testing (optional, for development)
 # pytest>=7.4.0

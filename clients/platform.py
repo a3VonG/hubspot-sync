@@ -9,6 +9,9 @@ from typing import Optional
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
+from config import DatabaseConfig
+from utils.database import DatabaseConnection
+
 
 @dataclass
 class User:
@@ -51,26 +54,28 @@ class Organization:
 class PlatformClient:
     """Client for fetching data from the platform database."""
     
-    def __init__(self, db_url: str):
+    def __init__(self, db_config: DatabaseConfig):
         """
         Initialize the platform client.
         
         Args:
-            db_url: PostgreSQL connection string
+            db_config: Database configuration
         """
-        self.db_url = db_url
-        self._conn = None
+        self.db_config = db_config
+        self._db: Optional[DatabaseConnection] = None
     
     def _get_connection(self):
         """Get or create a database connection."""
-        if self._conn is None or self._conn.closed:
-            self._conn = psycopg2.connect(self.db_url)
-        return self._conn
+        if self._db is None:
+            self._db = DatabaseConnection(self.db_config)
+            self._db.connect()
+        return self._db.connection
     
     def close(self):
         """Close the database connection."""
-        if self._conn and not self._conn.closed:
-            self._conn.close()
+        if self._db:
+            self._db.close()
+            self._db = None
     
     def get_all_organizations(self) -> list[Organization]:
         """
@@ -90,7 +95,6 @@ class PlatformClient:
                     admin_user_id,
                     paddle_id
                 FROM organizations
-                WHERE is_default_organization = false
                 ORDER BY name
             """)
             org_rows = cur.fetchall()
