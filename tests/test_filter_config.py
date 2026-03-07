@@ -1,7 +1,7 @@
 """Tests for filter_config module."""
 
 import pytest
-from filter_config import (
+from hubspot_sync.filter_config import (
     is_org_blacklisted,
     is_email_blacklisted,
     filter_emails,
@@ -22,7 +22,7 @@ class TestIsOrgBlacklisted:
     
     def test_blacklisted_org(self, monkeypatch):
         """Test that blacklisted orgs are detected."""
-        import filter_config
+        import hubspot_sync.filter_config as filter_config
         monkeypatch.setattr(filter_config, 'BLACKLISTED_ORG_IDS', {"org-123", "org-456"})
         
         assert filter_config.is_org_blacklisted("org-123") is True
@@ -56,7 +56,7 @@ class TestIsEmailBlacklisted:
     
     def test_blacklisted_pattern(self, monkeypatch):
         """Test pattern matching."""
-        import filter_config
+        import hubspot_sync.filter_config as filter_config
         monkeypatch.setattr(filter_config, 'BLACKLISTED_EMAIL_PATTERNS', {"+test@", "noreply"})
         
         assert filter_config.is_email_blacklisted("user+test@company.com") is True

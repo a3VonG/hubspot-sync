@@ -1,13 +1,23 @@
 name: HubSpot Sync
 
 on:
-  # Run on a schedule (e.g., every 6 hours)
   schedule:
-    - cron: '0 */6 * * *'  # Every 6 hours
-  
-  # Allow manual trigger
+    # Organization sync: daily at 6am UTC (discovery of new orgs)
+    - cron: '0 6 * * *'
+    # Analytics sync: every 6 hours
+    - cron: '0 */6 * * *'
+
   workflow_dispatch:
     inputs:
+      workflow:
+        description: 'Which sync to run'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - organizations
+          - analytics
       dry_run:
         description: 'Run in dry-run mode (no changes)'
         required: false
@@ -17,31 +27,49 @@ on:
         description: 'Sync specific organization ID (optional)'
         required: false
         type: string
+      limit:
+        description: 'Limit number of records processed (optional)'
+        required: false
+        type: string
+
+env:
+  HUBSPOT_API_KEY: ${{ secrets.HUBSPOT_API_KEY }}
+  DB_HOST: ${{ secrets.DB_HOST }}
+  DB_PORT: ${{ secrets.DB_PORT || '5432' }}
+  DB_NAME: ${{ secrets.DB_NAME }}
+  DB_USER: ${{ secrets.DB_USER }}
+  DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+  SSH_HOST: ${{ secrets.SSH_HOST }}
+  SSH_USER: ${{ secrets.SSH_USER }}
+  SSH_KEY_BASE64: ${{ secrets.SSH_KEY_BASE64 }}
+  PADDLE_API_KEY: ${{ secrets.PADDLE_API_KEY }}
+  PADDLE_VENDOR_ID: ${{ secrets.PADDLE_VENDOR_ID }}
+  SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
 jobs:
-  sync:
+  sync-organizations:
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 15
+    # Run on daily schedule (6am) or manual trigger requesting orgs/both
+    if: >-
+      github.event_name == 'workflow_dispatch' && (github.event.inputs.workflow == 'organizations' || github.event.inputs.workflow == 'both')
+      || github.event_name == 'schedule' && github.event.schedule == '0 6 * * *'
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-      
+
       - name: Install dependencies
         run: pip install -r requirements.txt
-      
-      - name: Run sync
+
+      - name: Run organization sync
         env:
-          HUBSPOT_API_KEY: ${{ secrets.HUBSPOT_API_KEY }}
-          PLATFORM_DB_URL: ${{ secrets.PLATFORM_DB_URL }}
-          PADDLE_API_KEY: ${{ secrets.PADDLE_API_KEY }}
-          PADDLE_VENDOR_ID: ${{ secrets.PADDLE_VENDOR_ID }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
         run: |
           ARGS=""
@@ -51,41 +79,76 @@ jobs:
           if [ -n "${{ github.event.inputs.org_id }}" ]; then
             ARGS="$ARGS --org-id ${{ github.event.inputs.org_id }}"
           fi
-          python sync.py $ARGS
-      
+          if [ -n "${{ github.event.inputs.limit }}" ]; then
+            ARGS="$ARGS --limit ${{ github.event.inputs.limit }}"
+          fi
+          python -m hubspot_sync.sync_organizations $ARGS
+
       - name: Upload audit log
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: sync-audit-log
+          name: org-sync-audit-${{ github.run_id }}
           path: sync_audit.db
           retention-days: 30
 
-  test:
+  sync-analytics:
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 15
+    # Run on 6-hourly schedule or manual trigger requesting analytics/both
+    if: >-
+      github.event_name == 'workflow_dispatch' && (github.event.inputs.workflow == 'analytics' || github.event.inputs.workflow == 'both')
+      || github.event_name == 'schedule' && github.event.schedule == '0 */6 * * *'
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-      
+
       - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run analytics sync
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
         run: |
-          pip install -r requirements.txt
-          pip install pytest pytest-cov
-      
-      - name: Run tests
-        run: |
-          pytest tests/ -v --cov=. --cov-report=xml --cov-report=term-missing
-      
-      - name: Upload coverage
-        uses: codecov/codecov-action@v4
+          ARGS=""
+          if [ "$DRY_RUN" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          if [ -n "${{ github.event.inputs.org_id }}" ]; then
+            ARGS="$ARGS --org-id ${{ github.event.inputs.org_id }}"
+          fi
+          if [ -n "${{ github.event.inputs.limit }}" ]; then
+            ARGS="$ARGS --limit ${{ github.event.inputs.limit }}"
+          fi
+          python -m hubspot_sync.sync_analytics $ARGS
+
+      - name: Upload audit log
+        uses: actions/upload-artifact@v4
         if: always()
         with:
-          file: coverage.xml
-          fail_ci_if_error: false
+          name: analytics-sync-audit-${{ github.run_id }}
+          path: sync_audit.db
+          retention-days: 30
+
+  notify-failure:
+    runs-on: ubuntu-latest
+    needs: [sync-organizations, sync-analytics]
+    if: always() && (needs.sync-organizations.result == 'failure' || needs.sync-analytics.result == 'failure')
+    steps:
+      - name: Notify Slack on failure
+        if: env.SLACK_WEBHOOK_URL != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"text\": \"HubSpot Sync failed: org=${{ needs.sync-organizations.result }}, analytics=${{ needs.sync-analytics.result }}. <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>\"
+            }"

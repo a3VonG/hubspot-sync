@@ -1,3 +1,0 @@
-- Create adriaan@imaginarytargetcustomer1.com on hubspot , then create account on platform, see that it gets put in testing fase and matched with that info, test that the testing credits are logged. Verify testing state. See that if you put in billing info that it updates. 
-? What is driving the testing state, is it the script or should it be hubspot ? 
-- Create new account on platform, see that goes into testing without credits, upload stuff, does it change to testing with credits? 

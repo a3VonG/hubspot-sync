@@ -1,4 +1,4 @@
-# HubSpot-Platform Sync Architecture
+# HubSpot Sync Module Architecture
 
 ## Overview
 
@@ -9,7 +9,7 @@ This system synchronizes data between our platform and HubSpot CRM. It consists 
 │                           SYNC WORKFLOWS                                     │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  1. ORGANIZATION SYNC (sync_organizations.py)                               │
+│  1. ORGANIZATION SYNC (hubspot_sync/sync_organizations.py)                   │
 │     Direction: Platform → HubSpot                                           │
 │     Purpose: Link platform orgs to HubSpot companies                        │
 │                                                                              │
@@ -18,7 +18,7 @@ This system synchronizes data between our platform and HubSpot CRM. It consists 
 │     │   DB     │     │   & Linker  │     │Companies │                      │
 │     └──────────┘     └─────────────┘     └──────────┘                      │
 │                                                                              │
-│  2. ANALYTICS SYNC (sync_analytics.py)                                      │
+│  2. ANALYTICS SYNC (hubspot_sync/sync_analytics.py)                          │
 │     Direction: HubSpot → Platform → HubSpot                                 │
 │     Purpose: Compute and update analytics for linked companies              │
 │                                                                              │
@@ -32,51 +32,53 @@ This system synchronizes data between our platform and HubSpot CRM. It consists 
 
 ## Entry Points
 
-| Script | Purpose | Starting Point | Frequency |
-|--------|---------|----------------|-----------|
-| `sync_organizations.py` | Link orgs to companies, create contacts, tasks | Platform DB | Daily/Weekly |
-| `sync_analytics.py` | Update analytics properties | HubSpot (companies with org_id) | Hourly/Daily |
-| `sync.py` | Combined (legacy) | Platform DB | - |
+| Command | Purpose | Starting Point | Frequency |
+|---------|---------|----------------|-----------|
+| `python -m hubspot_sync.sync_organizations` | Link orgs to companies, create contacts, tasks | Platform DB | Daily/Weekly |
+| `python -m hubspot_sync.sync_analytics` | Update analytics properties | HubSpot (companies with org_id) | Hourly/Daily |
+| `python -m hubspot_sync` | Combined (legacy) | Platform DB | - |
 
 ## Directory Structure
 
 ```
-hubspot_sync/
-├── sync_organizations.py    # Entry point: Platform → HubSpot linking
-├── sync_analytics.py        # Entry point: Analytics updates
-├── sync.py                  # Combined entry point (legacy)
+hubspot_sync/                   # This module
+├── __init__.py
+├── __main__.py                 # python -m hubspot_sync
+├── sync_organizations.py       # Entry point: Platform → HubSpot linking
+├── sync_analytics.py           # Entry point: Analytics updates
+├── sync.py                     # Combined entry point (legacy)
 │
-├── config.py                # Configuration & environment
-├── filter_config.py         # Blacklists, spam detection rules
+├── config.py                   # Configuration & environment
+├── filter_config.py            # Blacklists, spam detection rules
 │
-├── clients/                 # External API clients
-│   ├── hubspot.py          # HubSpot CRM API
-│   └── platform.py         # Platform database access
+├── clients/                    # External API clients
+│   ├── hubspot.py             # HubSpot CRM API
+│   └── platform.py            # Platform database access
 │
-├── matching/               # Organization ↔ Company matching
-│   ├── matcher.py         # Main matching orchestrator
-│   ├── signals.py         # Match signal collection
-│   └── scorer.py          # Confidence scoring
+├── matching/                   # Organization ↔ Company matching
+│   ├── matcher.py             # Main matching orchestrator
+│   ├── signals.py             # Match signal collection
+│   └── scorer.py              # Confidence scoring
 │
-├── actions/                # Business actions
-│   ├── linker.py          # Link org to company
-│   ├── contact_sync.py    # Create/associate contacts
-│   ├── task_creator.py    # Create review tasks
-│   ├── company_creator.py # Create placeholder companies
-│   └── analytics_sync.py  # Sync analytics to HubSpot
+├── actions/                    # Business actions
+│   ├── linker.py              # Link org to company
+│   ├── contact_sync.py        # Create/associate contacts
+│   ├── task_creator.py        # Create review tasks
+│   ├── company_creator.py     # Create placeholder companies
+│   └── analytics_sync.py     # Sync analytics to HubSpot
 │
-├── analytics/              # Analytics computation
-│   ├── models.py          # Data models & property definitions
+├── analytics/                  # Analytics computation
+│   ├── models.py              # Data models & property definitions
 │   ├── platform_analytics.py  # Main orchestrator
-│   ├── usage_metrics.py   # Usage from usage_transactions
-│   ├── order_metrics.py   # Orders & jobs metrics
-│   ├── account_metrics.py # Account info from organizations
-│   └── billing_status.py  # Paddle subscription status
+│   ├── usage_metrics.py       # Usage from usage_transactions
+│   ├── order_metrics.py       # Orders & jobs metrics
+│   ├── account_metrics.py     # Account info from organizations
+│   └── billing_status.py     # Paddle subscription status
 │
-└── utils/                  # Utilities
-    ├── database.py        # DB connection with SSH tunnel
-    ├── domains.py         # Domain extraction & validation
-    └── audit.py           # Audit logging
+└── utils/                      # Utilities
+    ├── database.py            # DB connection with SSH tunnel
+    ├── domains.py             # Domain extraction & validation
+    └── audit.py               # Audit logging
 ```
 
 ## Data Flow
@@ -116,7 +118,7 @@ Fetch from Paddle API:
     │
     ▼
 Compute derived metrics:
-    ├── is_testing (no subscription + fresh signup OR NO_BILLING scope)
+    ├── testing_status (account_created / testing / not_testing)
     └── usage_trend (comparing periods)
     │
     ▼
@@ -139,8 +141,8 @@ without code deploys and is visible to the whole team.
 
 | Property | Values | Use for |
 |----------|--------|---------|
-| `platform_billing_active` | `not started`, `active`, `cancelled` | Setting `company_status` (Testing/Customer/Churned), triggering onboarding vs upsell flows |
-| `platform_is_testing` | `true`/`false` | Segmenting trial orgs from paying/churned, gating testing-specific workflows |
+| `platform_billing_active` | `not started`, `active`, `cancelled` | Setting `company_status` (Customer/Churned), triggering onboarding vs upsell flows |
+| `platform_testing_status` | `account_created`/`testing`/`not_testing` | Distinguishing fresh signups from active testers from paying/churned |
 | `platform_has_account` | `true`/`false` | Distinguishing platform users from other companies |
 
 #### Usage & Engagement
@@ -174,12 +176,13 @@ without code deploys and is visible to the whole team.
 
 1. **Set company_status automatically:**
    - When `platform_billing_active` = `active` → set `company_status` = "Customer"
-   - When `platform_billing_active` = `not started` → set `company_status` = "Testing"
+   - When `platform_testing_status` = `account_created` → set `company_status` = "Account Created"
+   - When `platform_testing_status` = `testing` → set `company_status` = "Testing"
    - When `platform_billing_active` = `cancelled` → set `company_status` = "Churned"
 
 2. **Testing activity detection:**
-   - When `platform_last_usage_date` is more than 7 days ago AND `platform_billing_active` = `not started` → mark as stalled, trigger re-engagement
-   - When `platform_last_usage_date` is unknown AND `platform_billing_active` = `not started` → mark as not started, trigger onboarding
+   - When `platform_testing_status` = `testing` AND `platform_last_usage_date` is more than 7 days ago → mark as stalled, trigger re-engagement
+   - When `platform_testing_status` = `account_created` AND `platform_signed_up_date` is more than 7 days ago → trigger onboarding nudge
 
 3. **Conversion signals:**
    - When `platform_free_credits_remaining` < 100 AND `platform_billing_active` = `not started` → trigger sales outreach
@@ -190,4 +193,4 @@ without code deploys and is visible to the whole team.
 ## See Also
 
 - `ANALYTICS.md` - Detailed analytics property definitions
-- `filter_config.py` - Spam detection & blacklist rules
+- `hubspot_sync/filter_config.py` - Spam detection & blacklist rules

@@ -4,12 +4,12 @@ import pytest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
-from analytics.models import OrganizationAnalytics
-from analytics.usage_metrics import UsageMetrics, UsageMetricsComputer
-from analytics.order_metrics import OrderMetrics, OrderMetricsComputer
-from analytics.account_metrics import AccountMetrics, AccountMetricsComputer
-from analytics.billing_status import BillingStatus, BillingStatusComputer
-from analytics.platform_analytics import PlatformAnalyticsComputer
+from hubspot_sync.analytics.models import OrganizationAnalytics
+from hubspot_sync.analytics.usage_metrics import UsageMetrics, UsageMetricsComputer
+from hubspot_sync.analytics.order_metrics import OrderMetrics, OrderMetricsComputer
+from hubspot_sync.analytics.account_metrics import AccountMetrics, AccountMetricsComputer
+from hubspot_sync.analytics.billing_status import BillingStatus, BillingStatusComputer
+from hubspot_sync.analytics.platform_analytics import PlatformAnalyticsComputer
 
 
 class TestOrganizationAnalytics:
@@ -209,7 +209,7 @@ class TestPlatformAnalyticsComputer:
     @staticmethod
     def _make_test_config():
         """Create a test config with mock database config."""
-        from config import Config, DatabaseConfig
+        from hubspot_sync.config import Config, DatabaseConfig
         db_config = DatabaseConfig(
             host="localhost",
             port=5432,
@@ -222,21 +222,33 @@ class TestPlatformAnalyticsComputer:
             db_config=db_config,
         ), db_config
     
-    def test_determine_testing_status_no_billing_scope(self):
-        """Test testing status with NO_BILLING scope."""
-        with patch('analytics.platform_analytics.DatabaseConnection'):
+    def test_determine_testing_status_no_billing_scope_no_usage(self):
+        """Test testing status with NO_BILLING scope and no product usage."""
+        with patch('hubspot_sync.analytics.platform_analytics.DatabaseConnection'):
             config, db_config = self._make_test_config()
             computer = PlatformAnalyticsComputer(db_config, config)
             
             account = AccountMetrics(scopes=["NO_BILLING"])
             billing = BillingStatus(has_active_subscription=True)  # Even with active sub
             
-            # NO_BILLING scope overrides everything
-            assert computer._determine_testing_status(account, billing) is True
+            # NO_BILLING + no usage = account_created
+            assert computer._determine_testing_status(account, billing, has_used_product=False) == "account_created"
+    
+    def test_determine_testing_status_no_billing_scope_with_usage(self):
+        """Test testing status with NO_BILLING scope and product usage."""
+        with patch('hubspot_sync.analytics.platform_analytics.DatabaseConnection'):
+            config, db_config = self._make_test_config()
+            computer = PlatformAnalyticsComputer(db_config, config)
+            
+            account = AccountMetrics(scopes=["NO_BILLING"])
+            billing = BillingStatus(has_active_subscription=True)
+            
+            # NO_BILLING + has used product = testing
+            assert computer._determine_testing_status(account, billing, has_used_product=True) == "testing"
     
     def test_determine_testing_status_fresh_signup(self):
-        """Test testing status for fresh signup."""
-        with patch('analytics.platform_analytics.DatabaseConnection'):
+        """Test testing status for fresh signup (account created, no usage)."""
+        with patch('hubspot_sync.analytics.platform_analytics.DatabaseConnection'):
             config, db_config = self._make_test_config()
             computer = PlatformAnalyticsComputer(db_config, config)
             
@@ -246,11 +258,27 @@ class TestPlatformAnalyticsComputer:
                 has_any_subscription_history=False,
             )
             
-            assert computer._determine_testing_status(account, billing) is True
+            # Fresh signup without product usage = account_created
+            assert computer._determine_testing_status(account, billing, has_used_product=False) == "account_created"
+    
+    def test_determine_testing_status_testing_with_usage(self):
+        """Test testing status for org that has used product but no subscription."""
+        with patch('hubspot_sync.analytics.platform_analytics.DatabaseConnection'):
+            config, db_config = self._make_test_config()
+            computer = PlatformAnalyticsComputer(db_config, config)
+            
+            account = AccountMetrics(scopes=[])
+            billing = BillingStatus(
+                has_active_subscription=False,
+                has_any_subscription_history=False,
+            )
+            
+            # No subscription but has used product = testing
+            assert computer._determine_testing_status(account, billing, has_used_product=True) == "testing"
     
     def test_determine_testing_status_production(self):
         """Test testing status for production customer."""
-        with patch('analytics.platform_analytics.DatabaseConnection'):
+        with patch('hubspot_sync.analytics.platform_analytics.DatabaseConnection'):
             config, db_config = self._make_test_config()
             computer = PlatformAnalyticsComputer(db_config, config)
             
@@ -260,4 +288,6 @@ class TestPlatformAnalyticsComputer:
                 has_any_subscription_history=True,
             )
             
-            assert computer._determine_testing_status(account, billing) is False
+            # Paying customer = not_testing (regardless of product usage)
+            assert computer._determine_testing_status(account, billing, has_used_product=True) == "not_testing"
+            assert computer._determine_testing_status(account, billing, has_used_product=False) == "not_testing"

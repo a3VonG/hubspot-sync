@@ -4,8 +4,8 @@ Tests for domain extraction utilities.
 
 import pytest
 
-from utils.domains import extract_domain, is_generic_domain, get_organization_domains
-from config import Config
+from hubspot_sync.utils.domains import extract_domain, is_generic_domain, get_organization_domains
+from hubspot_sync.config import Config
 
 
 class TestExtractDomain:
@@ -62,9 +62,21 @@ class TestIsGenericDomain:
         assert is_generic_domain("") is True
         assert is_generic_domain(None) is True
     
+    def test_regional_variants(self):
+        """Should identify regional variants of generic providers."""
+        assert is_generic_domain("outlook.it") is True
+        assert is_generic_domain("outlook.co.uk") is True
+        assert is_generic_domain("hotmail.co.uk") is True
+        assert is_generic_domain("hotmail.fr") is True
+        assert is_generic_domain("yahoo.co.jp") is True
+        assert is_generic_domain("yahoo.fr") is True
+        assert is_generic_domain("live.nl") is True
+        assert is_generic_domain("gmx.at") is True
+        assert is_generic_domain("yandex.ru") is True
+    
     def test_with_custom_config(self):
-        """Should use config's generic domains list."""
-        from config import DatabaseConfig
+        """Should use config's generic domains list in addition to built-in list."""
+        from hubspot_sync.config import DatabaseConfig
         db_config = DatabaseConfig(
             host="localhost", port=5432, name="test", user="test", password="test"
         )
@@ -74,7 +86,7 @@ class TestIsGenericDomain:
             generic_email_domains=("custom.com",),
         )
         assert is_generic_domain("custom.com", config) is True
-        assert is_generic_domain("gmail.com", config) is False  # Not in custom list
+        assert is_generic_domain("gmail.com", config) is True  # Built-in list always applies
 
 
 class TestGetOrganizationDomains:

@@ -8,7 +8,7 @@ This document defines all analytics properties synced to HubSpot companies.
 |----------|------------|-------------|
 | **Core** | All companies | Basic account info, always updated |
 | **Usage** | All companies | Platform usage metrics |
-| **Testing** | `is_testing=true` only | Free trial specific metrics |
+| **Testing** | `testing_status="testing"` only | Free trial specific metrics (only for orgs that have used the product) |
 | **Issues** | All companies | Errors and refunds |
 
 ---
@@ -46,15 +46,15 @@ This document defines all analytics properties synced to HubSpot companies.
   cancelled   = subscription.status IN ('canceled', 'paused')
   ```
 
-### `platform_is_testing`
-- **Type:** Boolean ("true"/"false")
-- **Source:** Computed
-- **Description:** Whether the organization is in testing/trial mode
+### `platform_testing_status`
+- **Type:** Enum ("account_created"/"testing"/"not_testing")
+- **Source:** Computed (from Paddle billing + product usage)
+- **Description:** Testing/trial status of the organization
 - **Logic:**
   ```
-  true  = no active Paddle subscription AND no subscription history
-          OR organization has NO_BILLING scope
-  false = has (or had) a Paddle subscription
+  account_created = (no subscription AND has NOT used product) OR (NO_BILLING scope AND has NOT used product)
+  testing         = (no subscription AND HAS used product) OR (NO_BILLING scope AND HAS used product)
+  not_testing     = has (or had) a Paddle subscription
   ```
 
 ### `platform_has_used_prodcut`
@@ -106,18 +106,24 @@ This document defines all analytics properties synced to HubSpot companies.
 
 ---
 
-## Testing Properties (Only When `is_testing=true`)
+## Testing Properties (Only When `testing_status="testing"`)
 
-These properties are **only synced for organizations in testing/trial mode**.
+These properties are **only synced for organizations actively testing** (have used the
+product but have no subscription). They are NOT synced for `"account_created"` orgs
+(fresh signups that haven't uploaded anything yet) or `"not_testing"` orgs.
 
-### When is `is_testing=true`?
+### When is `testing_status="testing"`?
 
 ```python
-is_testing = (
-    # No active Paddle subscription AND no subscription history (fresh signup)
-    (not has_active_subscription and not has_subscription_history)
-    # OR has NO_BILLING scope (explicitly exempt from billing)
-    or "NO_BILLING" in organization.scopes
+testing_status = (
+    "testing" if (
+        # No active Paddle subscription AND no subscription history
+        (not has_active_subscription and not has_subscription_history)
+        # OR has NO_BILLING scope
+        or "NO_BILLING" in organization.scopes
+    ) and has_used_product  # AND has actually used the product
+    else "account_created" if (same billing condition) and not has_used_product
+    else "not_testing"
 )
 ```
 

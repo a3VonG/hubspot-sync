@@ -5,13 +5,13 @@ Tests for sync actions (linker, contact_sync, task_creator).
 import pytest
 from unittest.mock import MagicMock
 
-from actions.linker import Linker, LinkResult
-from actions.contact_sync import ContactSyncer, ContactSyncResult
-from actions.task_creator import TaskCreator, TaskResult
-from matching.matcher import MatchResult, MatchType
-from clients.platform import Organization, User
-from clients.hubspot import Company, Contact
-from utils.audit import AuditLog, SyncEventType
+from hubspot_sync.actions.linker import Linker, LinkResult
+from hubspot_sync.actions.contact_sync import ContactSyncer, ContactSyncResult
+from hubspot_sync.actions.task_creator import TaskCreator, TaskResult
+from hubspot_sync.matching.matcher import MatchResult, MatchType
+from hubspot_sync.clients.platform import Organization, User
+from hubspot_sync.clients.hubspot import Company, Contact
+from hubspot_sync.utils.audit import AuditLog, SyncEventType
 
 
 class TestLinker:

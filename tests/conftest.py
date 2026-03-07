@@ -5,9 +5,9 @@ Pytest configuration and shared fixtures.
 import pytest
 from unittest.mock import MagicMock, patch
 
-from config import Config, DatabaseConfig
-from clients.platform import Organization, User
-from clients.hubspot import Company, Contact
+from hubspot_sync.config import Config, DatabaseConfig
+from hubspot_sync.clients.platform import Organization, User
+from hubspot_sync.clients.hubspot import Company, Contact
 
 
 @pytest.fixture

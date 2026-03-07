@@ -5,11 +5,11 @@ Tests for the matching logic.
 import pytest
 from unittest.mock import MagicMock
 
-from matching.matcher import Matcher, MatchResult, MatchType
-from matching.signals import SignalCollector, MatchSignal, SignalType
-from matching.scorer import Scorer, ScoredMatch
-from clients.platform import Organization, User
-from clients.hubspot import Company, Contact
+from hubspot_sync.matching.matcher import Matcher, MatchResult, MatchType
+from hubspot_sync.matching.signals import SignalCollector, MatchSignal, SignalType
+from hubspot_sync.matching.scorer import Scorer, ScoredMatch
+from hubspot_sync.clients.platform import Organization, User
+from hubspot_sync.clients.hubspot import Company, Contact
 
 
 class TestMatcher:

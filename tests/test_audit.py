@@ -6,7 +6,7 @@ import pytest
 import os
 import tempfile
 
-from utils.audit import AuditLog, SyncEvent, SyncEventType
+from hubspot_sync.utils.audit import AuditLog, SyncEvent, SyncEventType
 
 
 class TestAuditLog:

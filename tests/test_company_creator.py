@@ -5,15 +5,15 @@ Tests for company creation and enrichment.
 import pytest
 from unittest.mock import MagicMock
 
-from actions.company_creator import (
+from hubspot_sync.actions.company_creator import (
     CompanyCreator, 
     CompanyCreateResult,
     SOURCE_AUTO_CREATED,
     SOURCE_ENRICHED,
 )
-from clients.platform import Organization, User
-from clients.hubspot import Company
-from utils.audit import AuditLog
+from hubspot_sync.clients.platform import Organization, User
+from hubspot_sync.clients.hubspot import Company
+from hubspot_sync.utils.audit import AuditLog
 
 
 class TestCompanyCreator:

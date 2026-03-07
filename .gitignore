@@ -63,3 +63,14 @@ coverage.xml
 # Workflow data (fetched JSON, generated markdown)
 workflows/data/*.json
 workflows/data/*.md
+
+# Outbound session data (leads, agent logs, API responses)
+outbound/sessions/session-*/
+
+# Cached data (fetched domain lists, etc.)
+.cache/
+
+# One-off exports and logs
+logs_syncs/
+*.csv
+*.html
