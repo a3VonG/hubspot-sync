@@ -62,7 +62,7 @@ class Config:
     db_config: DatabaseConfig
     
     # HubSpot property name (optional with default)
-    hubspot_platform_org_id_property: str = "platform_org_id"
+    hubspot_platform_org_id_property: str = "platform_organization_id"
     
     # Paddle (optional)
     paddle_api_key: Optional[str] = None
@@ -75,10 +75,10 @@ class Config:
     auto_link_confidence_threshold: float = 0.8
     
     # Auto-create companies for unmatched organizations
-    auto_create_companies: bool = False
-    
+    auto_create_companies: bool = True
+
     # Property names for tracking company source
-    company_source_property: str = "platform_has_used_prodcut"
+    company_source_property: str = "platform_company_source"
     
     # Generic email domains to skip for domain matching
     generic_email_domains: tuple = (
@@ -106,7 +106,7 @@ class Config:
     
     # HubSpot task queue ID for sync review tasks (optional)
     # Find this in HubSpot UI: Sales > Tasks > Queue dropdown > inspect element > data-option-value
-    task_queue_id: Optional[str] = None
+    task_queue_id: Optional[str] = "24524809"
     
     # Dry run mode - if True, don't make changes to HubSpot
     dry_run: bool = False
@@ -118,7 +118,7 @@ class Config:
             hubspot_api_key=os.environ["HUBSPOT_API_KEY"],
             db_config=DatabaseConfig.from_env(),
             hubspot_platform_org_id_property=os.environ.get(
-                "HUBSPOT_PLATFORM_ORG_ID_PROPERTY", "platform_org_id"
+                "HUBSPOT_PLATFORM_ORG_ID_PROPERTY", "platform_organization_id"
             ),
             paddle_api_key=os.environ.get("PADDLE_API_KEY"),
             paddle_vendor_id=os.environ.get("PADDLE_VENDOR_ID"),
@@ -126,8 +126,8 @@ class Config:
             auto_link_confidence_threshold=float(
                 os.environ.get("AUTO_LINK_CONFIDENCE_THRESHOLD", "0.8")
             ),
-            auto_create_companies=os.environ.get("AUTO_CREATE_COMPANIES", "false").lower() == "true",
-            company_source_property=os.environ.get("COMPANY_SOURCE_PROPERTY", "platform_has_used_prodcut"),
+            auto_create_companies=os.environ.get("AUTO_CREATE_COMPANIES", "true").lower() == "true",
+            company_source_property=os.environ.get("COMPANY_SOURCE_PROPERTY", "platform_company_source"),
             task_queue_id=os.environ.get("HUBSPOT_TASK_QUEUE_ID"),
             dry_run=os.environ.get("DRY_RUN", "false").lower() == "true",
         )
