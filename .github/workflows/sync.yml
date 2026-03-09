@@ -4,8 +4,8 @@ on:
   schedule:
     # Organization sync: daily at 6am UTC (discovery of new orgs)
     - cron: '0 6 * * *'
-    # Analytics sync: every 6 hours
-    - cron: '0 */6 * * *'
+    # Analytics sync: every 2 hours (processes batch of most-stale companies each run)
+    - cron: '0 */2 * * *'
 
   workflow_dispatch:
     inputs:
@@ -81,6 +81,8 @@ jobs:
           fi
           if [ -n "${{ github.event.inputs.limit }}" ]; then
             ARGS="$ARGS --limit ${{ github.event.inputs.limit }}"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            ARGS="$ARGS --limit 100"
           fi
           python -m hubspot_sync.sync_organizations $ARGS
 
@@ -95,10 +97,10 @@ jobs:
   sync-analytics:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Run on 6-hourly schedule or manual trigger requesting analytics/both
+    # Run on 2-hourly schedule or manual trigger requesting analytics/both
     if: >-
       github.event_name == 'workflow_dispatch' && (github.event.inputs.workflow == 'analytics' || github.event.inputs.workflow == 'both')
-      || github.event_name == 'schedule' && github.event.schedule == '0 */6 * * *'
+      || github.event_name == 'schedule' && github.event.schedule == '0 */2 * * *'
 
     steps:
       - name: Checkout code
@@ -126,6 +128,8 @@ jobs:
           fi
           if [ -n "${{ github.event.inputs.limit }}" ]; then
             ARGS="$ARGS --limit ${{ github.event.inputs.limit }}"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            ARGS="$ARGS --limit 100"
           fi
           python -m hubspot_sync.sync_analytics $ARGS
 
