@@ -125,8 +125,8 @@ class CompanyCreator:
         
         if not admin_email:
             return CompanyCreateResult(
-                success=False,
-                message=f"Cannot create company for {org.name}: no email available",
+                success=True,
+                message=f"Skipped company for {org.name}: no email available",
             )
         
         # Build company name
